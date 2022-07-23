@@ -1,6 +1,6 @@
 # ResNet-Distribution
 
-## Support the following items: 
+## One code supporting the following items at the same time: 
 
 Deep learning-based auxiliary diagnosis system towards pathological section distribution -> About 97.20%
 
