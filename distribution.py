@@ -142,6 +142,7 @@ class ResNet:
 			if isinstance(trainingSetPath, str) and os.path.isdir(trainingSetPath):
 				self.trainingSetPath = trainingSetPath
 			else:
+				self.trainingSetPath = None
 				while not self.trainingSetPath:
 					print("The path to the training set is not specified. Please enter a new path: ")
 					tmpPath = input("")
@@ -152,6 +153,7 @@ class ResNet:
 			if isinstance(testingSetPath, str) and os.path.isdir(testingSetPath):
 				self.testingSetPath = testingSetPath
 			else:
+				self.testingSetPath = None
 				while not self.testingSetPath:
 					print("The path to the testing set is not specified. Please enter a new path: ")
 					tmpPath = input("")
@@ -251,25 +253,40 @@ class ResNet:
 				transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 			]
 		)
-		dataset = ImageFolder(root = self.dataSetPath if self.randomSplit else self.trainingSetPath, transform = transformTrain)
-		dataLoader = DataLoader(dataset, batch_size = batchSize, shuffle = self.isShuffle, num_workers = 4)
-		indexList = list(range(len(dataset)))
-		if self.isShuffle:
-			shuffle(indexList)
-		trainingIdx = indexList[:int(len(dataset) * self.splitRate)]
-		testingIdx = indexList[int(len(dataset) * self.splitRate):]
-		trainingSampler = SubsetRandomSampler(trainingIdx)
-		testingSampler = SubsetRandomSampler(testingIdx)
-		self.trainingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = trainingSampler, num_workers = 4)
-		self.testingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
-		print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(dataset), len(trainingIdx), len(testingIdx)))
+		
+		if self.randomSplit:
+			dataset = ImageFolder(root = self.dataSetPath, transform = transformTrain)
+			dataLoader = DataLoader(dataset, batch_size = batchSize, shuffle = self.isShuffle, num_workers = 4)
+			indexList = list(range(len(dataset)))
+			if self.isShuffle:
+				shuffle(indexList)
+			trainingIdx = indexList[:int(len(dataset) * self.splitRate)]
+			testingIdx = indexList[int(len(dataset) * self.splitRate):]
+			trainingSampler = SubsetRandomSampler(trainingIdx)
+			testingSampler = SubsetRandomSampler(testingIdx)
+			self.trainingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = trainingSampler, num_workers = 4)
+			self.testingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
+			print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(dataset), len(trainingIdx), len(testingIdx)))
+		else:
+			trainingSet = ImageFolder(root = self.trainingSetPath, transform = transformTrain)
+			testingSet = ImageFolder(root = self.testingSetPath, transform = transformTest)
+			trainingIdx = list(range(len(trainingSet)))
+			testingIdx = list(range(len(testingSet)))
+			if self.isShuffle:
+				shuffle(trainingIdx)
+				shuffle(testingIdx)
+			trainingSampler = SubsetRandomSampler(trainingIdx)
+			testingSampler = SubsetRandomSampler(testingIdx)
+			self.trainingLoader = DataLoader(trainingSet, batch_size = self.batchSize, sampler = trainingSampler, num_workers = 4)
+			self.testingLoader = DataLoader(testingSet, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
+			print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(trainingSet) + len(testingSet), len(trainingSet), len(testingSet)))
 	
 	# Evaluate #
 	def getDetailedAccuracy(self:object, output:object, label:object) -> float:
 		total = output.shape[0]
 		_, pred_label = output.max(1)
 		num_correct = (pred_label == label).sum().item()
-		return num_correct / total
+		return num_correct / total if total else float("nan")
 	def getGeneralAccuracy(self:object, model:object, device:object) -> float:
 		model.eval()
 		total = 0
@@ -282,7 +299,7 @@ class ResNet:
 				_, predicted = torchMax(out.data, 1)
 				total += image.size(0)
 				correct += predicted.data.eq(label.data).cpu().sum()
-		return (1.0 * correct.numpy()) / total if total else "Unavailable"
+		return (1.0 * correct.numpy()) / total if total else float("nan")
 	def log(self:object, content:str, outputFp:str, mode = "w", encoding:str = "utf-8") -> bool:
 		if not content or not outputFp:
 			return None
@@ -399,7 +416,7 @@ class ResNet:
 		endTime = datetime.now()
 		if ResNet.handleFolder(os.path.split(self.modelFilePath)[0]):
 			try:
-				save(model, self.modelFilePath) # save model
+				torchSave(model, self.modelFilePath) # save model
 				print("The model is successfully save to \"{0}\". ".format(self.modelFilePath))
 			except Exception as e:
 				print("Failed saving the model to \"{0}\". Details are as follows. \n{1}".format(self.modelFilePath, e))
@@ -454,7 +471,10 @@ class ResNet:
 		print("\nThe training is finished. \n\n")
 	
 	# Test #
-	def test(self:object):
+	def test(self:object) -> None:
+		if not os.path.isfile(self.modelFilePath):
+			print("The model file does not exist. The testing is failed due to no models loaded. ")
+			return
 		print("Start to test the model. ")
 		model = torchLoad(self.modelFilePath) if is_available() else torchLoad(self.modelFilePath, map_location = "cpu")
 		model.cpu()
@@ -555,7 +575,7 @@ def main() -> int:
 		performanceFigureFilePathFormat = performanceFigureFilePathFormat, dpi = dpi, pauseTime = pauseTime		\
 	)
 	resNet.load()
-	#resNet.train()
+	resNet.train()
 	resNet.test()
 	print("\nAll the procedures are finished. Please press the enter key to exit. \n")
 	input()
