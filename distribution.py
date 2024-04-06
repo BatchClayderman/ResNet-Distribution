@@ -13,6 +13,7 @@ try:
 	from torch.utils.data import SubsetRandomSampler, DataLoader
 	from torchvision import models, transforms
 	from torchvision.datasets import ImageFolder
+	from torchvision.datasets.folder import default_loader
 	from torchvision.models.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 	from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 	from seaborn import heatmap
@@ -29,9 +30,9 @@ EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EOF = (-1)
 useNet = 18
-maxEpoch = 2
-batchSize = 64
-initialLearningRate = 0.001
+maxEpoch = 20
+batchSize = 128
+initialLearningRate = 0.0001
 dataSetPath = "dataSet"
 randomSplit = True
 splitRate = 0.8
@@ -48,8 +49,30 @@ pauseTime = 10 # to have a rest, e.g. 10s, 30s, 60s, 0 for no rests
 
 
 # Class #
+class FilteredImageFolder(ImageFolder):
+	def __init__(				\
+		self, 				\
+		root: str, 				\
+		transform:object = None, 		\
+		target_transform:object = None, 	\
+		loader:object = default_loader, 		\
+		is_valid_file:object = None, 		\
+		folderInitialComments:list = None, 	\
+	) -> object:
+		self.folderInitialComments = folderInitialComments
+		super(FilteredImageFolder, self).__init__(root, transform, target_transform, loader, is_valid_file)
+	def find_classes(self, directory:str) -> tuple:
+		classes = sorted(entry.name for entry in os.scandir(directory) if entry.is_dir())
+		for i in range(len(classes) - 1, -1, -1):
+			for folderInitialComment in self.folderInitialComments:
+				if classes[i].startswith(folderInitialComment):
+					del classes[i]
+					break
+		class_to_idx = {cls_name: i for i, cls_name in enumerate(classes)}
+		return classes, class_to_idx
+
 class Net(nn.Module):
-	def __init__(self, model):
+	def __init__(self, model)  -> object:
 		super(Net, self).__init__()
 		self.conv1 = nn.Conv2d(3, 64, kernel_size = 5, stride = 2, padding = 2, bias = False)
 		self.resnet_layer = nn.Sequential(*list(model.children())[1:-1]) # Remove the last layer of the model
@@ -255,7 +278,7 @@ class ResNet:
 		)
 		
 		if self.randomSplit:
-			dataset = ImageFolder(root = self.dataSetPath, transform = transformTrain)
+			dataset = FilteredImageFolder(root = self.dataSetPath, transform = transformTrain, folderInitialComments = self.folderInitialComments)
 			dataLoader = DataLoader(dataset, batch_size = batchSize, shuffle = self.isShuffle, num_workers = 4)
 			indexList = list(range(len(dataset)))
 			if self.isShuffle:
@@ -268,8 +291,8 @@ class ResNet:
 			self.testingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
 			print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(dataset), len(trainingIdx), len(testingIdx)))
 		else:
-			trainingSet = ImageFolder(root = self.trainingSetPath, transform = transformTrain)
-			testingSet = ImageFolder(root = self.testingSetPath, transform = transformTest)
+			trainingSet = FilteredImageFolder(root = self.trainingSetPath, transform = transformTrain, folderInitialComments = self.folderInitialComments)
+			testingSet = FilteredImageFolder(root = self.testingSetPath, transform = transformTest, folderInitialComments = self.folderInitialComments)
 			trainingIdx = list(range(len(trainingSet)))
 			testingIdx = list(range(len(testingSet)))
 			if self.isShuffle:
@@ -429,11 +452,11 @@ class ResNet:
 			print("trainingGeneralAccuracy = {0}".format(trainingGeneralAccuracy))
 			maxTrainingGeneralAccuracy = max(trainingGeneralAccuracy)
 			maxTrainingGeneralAccuracyEpoch = trainingGeneralAccuracy.index(maxTrainingGeneralAccuracy)
-			print(																\
-				"Max accuracy approached at epoch {0} is {1}%. \nThe overall time consumption is {2:.6f}s. \nThe time cost to this accuracy is {3:.6f}s".format(		\
-					maxTrainingGeneralAccuracyEpoch, maxTrainingGeneralAccuracy, (endTime - startTime).total_seconds() - pauseTime * (self.maxEpoch - 1), 	\
-					((endTime - startTime).total_seconds() - pauseTime * (self.maxEpoch - 1)) * maxTrainingGeneralAccuracyEpoch / self.maxEpoch		\
-				)															\
+			print(																	\
+				"Max accuracy approached at epoch {0} is {1}%. \nThe overall time consumption is {2:.6f}s. \nThe time cost to this accuracy is {3:.6f}s".format(			\
+					maxTrainingGeneralAccuracyEpoch, maxTrainingGeneralAccuracy * 100, (endTime - startTime).total_seconds() - pauseTime * (self.maxEpoch - 1), 		\
+					((endTime - startTime).total_seconds() - pauseTime * (self.maxEpoch - 1)) * maxTrainingGeneralAccuracyEpoch / self.maxEpoch			\
+				)																\
 			)
 			self.draw(																\
 				[i for i in range(1, len(trainingGeneralAccuracy) + 1)], trainingGeneralAccuracy, color = "orange", marker = "x", legend = ["Accuracy"], title = None, 		\
@@ -574,12 +597,17 @@ def main() -> int:
 		trainingLogFilePath = trainingLogFilePath, sampling = sampling, testingLogFilePath = testingLogFilePath, 		\
 		performanceFigureFilePathFormat = performanceFigureFilePathFormat, dpi = dpi, pauseTime = pauseTime		\
 	)
-	resNet.load()
-	resNet.train()
-	resNet.test()
-	print("\nAll the procedures are finished. Please press the enter key to exit. \n")
-	input()
-	return EXIT_SUCCESS
+	try:
+		resNet.load()
+		resNet.train()
+		resNet.test()
+		print("\nAll the procedures are finished. Please press the enter key to exit. \n")
+		input()
+		return EXIT_SUCCESS
+	except Exception as e:
+		print("Exceptions occurred. Details are as follows. \n{0}\n\nPlease press the enter key to exit. \n".format(e))
+		input()
+		return EXIT_FAILURE
 
 
 
