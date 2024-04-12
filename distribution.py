@@ -1,26 +1,31 @@
 import os
-from sys import exit
+from sys import argv, exit
 from shutil import copyfile, rmtree
+from re import findall
 from random import shuffle
 from datetime import datetime
 from time import sleep
 try:
+	from numpy import array, diag, fromstring, sqrt, sum as npSum, zeros
+	from pandas import DataFrame as DF
 	from matplotlib import pyplot as plt
 	from matplotlib.ticker import MaxNLocator
-	from torch import __version__ as torchVersion, device as torchDevice, load as torchLoad, max as torchMax, nn, no_grad, optim, save as torchSave
+	from torch import __version__ as torchVersion, device as torchDevice, load as torchLoad, max as torchMax, no_grad, optim, save as torchSave
 	from torch.cuda import is_available
+	from torch.nn import Conv2d, CrossEntropyLoss, Linear, Module, Sequential
 	from torch.optim.lr_scheduler import StepLR
 	from torch.utils.data import SubsetRandomSampler, DataLoader
 	from torchvision import models, transforms
 	from torchvision.datasets import ImageFolder
 	from torchvision.datasets.folder import default_loader
 	from torchvision.models.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
-	from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+	from sklearn.metrics import confusion_matrix
 	from seaborn import heatmap
 	from tqdm import tqdm
 except Exception as e:
 	print("Failed importing related libraries. Details are as follows. \n{0}\n\nPlease press the enter key to exit. ".format(e))
-	input()
+	if len(argv) <= 1 or "q" not in argv[1].lower():
+		input()
 	exit(-1)
 try:
 	os.chdir(os.path.abspath(os.path.dirname(__file__)))
@@ -33,17 +38,20 @@ useNet = 18
 maxEpoch = 20
 batchSize = 128
 initialLearningRate = 0.0001
+conv2dParameters = {"in_channels":3, "out_channels":64, "kernel_size":7, "stride":2, "padding":2, "bias":False}
 dataSetPath = "dataSet"
 randomSplit = True
 splitRate = 0.8
 trainingSetPath = None
 testingSetPath = None
 isShuffle = True
-modelFilePath = "modelcatdog.pth"
+modelFilePath = "model.pth"
 trainingLogFilePath = "training.log"
 sampling = 100
 testingLogFilePath = "testing.log"
 performanceFigureFilePathFormat = "performanceFigure" + os.sep + "{0}.png"
+performanceExcelFilePathFormat = "performanceExcel" + os.sep + "{0}.xlsx"
+encoding = "utf-8"
 dpi = 1200
 pauseTime = 10 # to have a rest, e.g. 10s, 30s, 60s, 0 for no rests
 
@@ -71,15 +79,15 @@ class FilteredImageFolder(ImageFolder):
 		class_to_idx = {cls_name: i for i, cls_name in enumerate(classes)}
 		return classes, class_to_idx
 
-class Net(nn.Module):
-	def __init__(self, model)  -> object:
+class Net(Module):
+	def __init__(self, model, dataClassCount, conv2dParameters)  -> object:
 		super(Net, self).__init__()
-		self.conv1 = nn.Conv2d(3, 64, kernel_size = 5, stride = 2, padding = 2, bias = False)
-		self.resnet_layer = nn.Sequential(*list(model.children())[1:-1]) # Remove the last layer of the model
+		self.conv1 = Conv2d(**conv2dParameters)
+		self.resnet_layer = Sequential(*list(model.children())[1:-1]) # Remove the last layer of the model
 		if useNet in (18, 34):
-			self.Linear_layer = nn.Linear(512, 8) # Add a full connection layer with modified parameters
+			self.Linear_layer = Linear(512, dataClassCount) # Add a full connection layer with modified parameters
 		elif useNet in (50, 101, 152):
-			self.Linear_layer = nn.Linear(2048, 32) # Add a full connection layer with modified parameters
+			self.Linear_layer = Linear(2048, dataClassCount) # Add a full connection layer with modified parameters
 	def forward(self, x):
 		x = self.conv1(x)
 		x = self.resnet_layer(x)
@@ -93,12 +101,16 @@ class ResNet:
 	netDict = {18:resnet18, 34:resnet34, 50:resnet50, 101:resnet101, 152:resnet152}
 	weightsDict = {18:models.ResNet18_Weights.DEFAULT, 34:models.ResNet34_Weights.DEFAULT, 50:models.ResNet50_Weights.DEFAULT, 101:models.ResNet101_Weights.DEFAULT, 152:models.ResNet152_Weights.DEFAULT}
 	netEpochDict = {18:24, 34:14, 50:18, 101:8, 152:12} # Pre-set max training epochs
-	folderInitialComments = (".", "#", "%", "//")
+	folderInitialComments = (".", "#", "%", "//", "__")
 	def __init__(													\
-		self:object, useNet:int|str, maxEpoch:int = None, batchSize:int = 16, initialLearningRate:float = 0.001, dataSetPath:str = "dataSet", 	\
-		randomSplit:bool = True, splitRate:float = 0.8, trainingSetPath:str = "trainingSet", testingSetPath:str = "testingSet", isShuffle = True, 	\
+		self:object, useNet:int|str = 18, maxEpoch:int = None, batchSize:int = 16, initialLearningRate:float = 0.001, 				\
+		conv2dParameters = {"in_channels":3, "out_channels":64, "kernel_size":7, "stride":2, "padding":2, "bias":False}, 			\
+		dataSetPath:str = "dataSet", randomSplit:bool = True, splitRate:float = 0.8, 							\
+		trainingSetPath:str = "trainingSet", testingSetPath:str = "testingSet", isShuffle = True, 						\
 		modelFilePath:str = "model.pth", trainingLogFilePath:str = "training.log", sampling:int = 100, testingLogFilePath:str = "testing.log", 	\
-		performanceFigureFilePathFormat:str = "performanceFigure" + os.sep + "{0}.png", dpi:int = 1200, pauseTime:int = 10			\
+		performanceFigureFilePathFormat:str = "performanceFigure" + os.sep + "{0}.png", 						\
+		performanceExcelFilePathFormat:str = "performanceExcel" + os.sep + "{0}.png", 						\
+		encoding:str = "utf-8", dpi:int = 1200, pauseTime:int = 10								\
 	) -> object:
 		# useNet #
 		if isinstance(useNet, int) and useNet in ResNet.netSeries:
@@ -135,6 +147,13 @@ class ResNet:
 		# initialLearningRate #
 		if isinstance(initialLearningRate, float) and 0 < initialLearningRate < 1:
 			self.initialLearningRate = initialLearningRate
+		
+		# conv2dParameters #
+		if isinstance(conv2dParameters, dict):
+			self.conv2dParameters = conv2dParameters
+		else:
+			print("Unknown parameters for conv2d are specified. It is defaulted to {0}. ".format({"in_channels":3, "out_channels":64, "kernel_size":7, "stride":2, "padding":2, "bias":False}))
+			self.conv2dParameters = {"in_channels":3, "out_channels":64, "kernel_size":7, "stride":2, "padding":2, "bias":False}
 		
 		# randomSplit #
 		if isinstance(randomSplit, bool):
@@ -209,7 +228,17 @@ class ResNet:
 		self.testingLogFilePath = testingLogFilePath
 		
 		# performanceFigureFilePathFormat #
-		self.performanceFigureFilePathFormat = performanceFigureFilePathFormat
+		self.performanceFigureFilePathFormat = str(performanceFigureFilePathFormat)
+		
+		# performanceExcelFilePathFormat #
+		self.performanceExcelFilePathFormat = str(performanceExcelFilePathFormat)
+		
+		# encoding #
+		if str(encoding).lower() in ("utf-8", "gbk", "utf-16"):
+			self.encoding = str(encoding).lower()
+		else:
+			print("Unknown or illegal encoding is specified. It is defaulted to \"utf-8\". ")
+			self.sampling = "utf-8"
 		
 		# dpi #
 		if isinstance(dpi, int) and dpi > 300:
@@ -249,17 +278,23 @@ class ResNet:
 		else:
 			print("Read data failed. The following folder does not exist. \n{0}".format(targetSetPath))
 			return (0, [])
-	def load(self:object) -> None:
+	def load(self:object) -> bool:
 		if self.randomSplit:
 			self.dataClassCount, self.dataClasses = self.getClasses(self.dataSetPath, "data")
 		else:
-			self.trainingClassCount, self.trainingClasses = self.getClasses(self.trainingSetPath, "training")
-			self.testingClassCount, self.testingClasses = self.getClasses(self.testingSetPath, "testing")
+			trainingClassCount, trainingClasses = self.getClasses(self.trainingSetPath, "training")
+			testingClassCount, testingClasses = self.getClasses(self.testingSetPath, "testing")
+			if trainingClassCount == testingClassCount and trainingClasses == testingClasses:
+				self.dataClassCount, self.dataClasses = trainingClassCount, trainingClasses
+			else:
+				print("The counts of training and testing classes are different. ")
+				return False
+		
 		if useNet in ResNet.netSeries[:2]:
 			transformPIL = transforms.RandomApply([transforms.RandomHorizontalFlip(p = 1), transforms.RandomVerticalFlip(p = 1), transforms.RandomRotation(45)], p = 0.5)
 		else:
 			transformPIL = transforms.RandomApply([transforms.RandomHorizontalFlip(p = 1), transforms.RandomVerticalFlip(p = 1), transforms.RandomRotation(45)], p = 0.4)
-		transformTrain = transforms.Compose(
+		trainingTransformer = transforms.Compose(
 			[
 				transforms.Resize((256, 256)),  # resize to 256x256
 				transformPIL, 
@@ -269,7 +304,7 @@ class ResNet:
 				transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.2225)) # Normalization, the value is given by Imagenet
 			]
 		)
-		transformTest = transforms.Compose(
+		testingTransformer = transforms.Compose(
 			[
 				transforms.Resize((224, 224)), 
 				transforms.ToTensor(), 
@@ -278,7 +313,7 @@ class ResNet:
 		)
 		
 		if self.randomSplit:
-			dataset = FilteredImageFolder(root = self.dataSetPath, transform = transformTrain, folderInitialComments = self.folderInitialComments)
+			dataset = FilteredImageFolder(root = self.dataSetPath, transform = trainingTransformer, folderInitialComments = self.folderInitialComments)
 			dataLoader = DataLoader(dataset, batch_size = batchSize, shuffle = self.isShuffle, num_workers = 4)
 			indexList = list(range(len(dataset)))
 			if self.isShuffle:
@@ -289,10 +324,11 @@ class ResNet:
 			testingSampler = SubsetRandomSampler(testingIdx)
 			self.trainingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = trainingSampler, num_workers = 4)
 			self.testingLoader = DataLoader(dataset, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
+			self.testingLoader.transformer = testingTransformer # change the transformer here
 			print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(dataset), len(trainingIdx), len(testingIdx)))
 		else:
-			trainingSet = FilteredImageFolder(root = self.trainingSetPath, transform = transformTrain, folderInitialComments = self.folderInitialComments)
-			testingSet = FilteredImageFolder(root = self.testingSetPath, transform = transformTest, folderInitialComments = self.folderInitialComments)
+			trainingSet = FilteredImageFolder(root = self.trainingSetPath, transform = trainingTransformer, folderInitialComments = self.folderInitialComments)
+			testingSet = FilteredImageFolder(root = self.testingSetPath, transform = testingTransformer, folderInitialComments = self.folderInitialComments)
 			trainingIdx = list(range(len(trainingSet)))
 			testingIdx = list(range(len(testingSet)))
 			if self.isShuffle:
@@ -303,8 +339,9 @@ class ResNet:
 			self.trainingLoader = DataLoader(trainingSet, batch_size = self.batchSize, sampler = trainingSampler, num_workers = 4)
 			self.testingLoader = DataLoader(testingSet, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
 			print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(trainingSet) + len(testingSet), len(trainingSet), len(testingSet)))
+		return True
 	
-	# Evaluate #
+	# API #
 	def getDetailedAccuracy(self:object, output:object, label:object) -> float:
 		total = output.shape[0]
 		_, pred_label = output.max(1)
@@ -323,12 +360,14 @@ class ResNet:
 				total += image.size(0)
 				correct += predicted.data.eq(label.data).cpu().sum()
 		return (1.0 * correct.numpy()) / total if total else float("nan")
-	def log(self:object, content:str, outputFp:str, mode = "w", encoding:str = "utf-8") -> bool:
+	
+	# Output #
+	def log(self:object, content:str, outputFp:str, mode = "w") -> bool:
 		if not content or not outputFp:
 			return None
 		elif ResNet.handleFolder(os.path.split(outputFp)[0]):
 			try:
-				with open(outputFp, mode = mode, encoding = encoding) as f:
+				with open(outputFp, mode = mode, encoding = self.encoding) as f:
 					f.write(str(content))
 				print("Log to \"{0}\" successfully. ".format(outputFp))
 				return True
@@ -380,23 +419,40 @@ class ResNet:
 			plt.show()
 			plt.close()
 			return True
+	def saveExcel(self:object, pf:DF, saveExcelName:str) -> bool:
+		savePath = self.performanceExcelFilePathFormat.format(saveExcelName)
+		if ResNet.handleFolder(os.path.split(savePath)[0]):
+			try:
+				if os.path.splitext(savePath)[1].lower() in (".txt", ".csv"):
+					pf.to_csv(savePath)
+				else:
+					pf.to_excel(savePath)
+				print("Save {0} to \"{1}\" successfully. ".format(saveExcelName, savePath))
+				return True
+			except Exception as e:
+				print("Failed saving {0} to \"{1}\". Details are as follows. \n{2}".format(saveExcelName, savePath, e))
+				return False
+		else:
+			print("Failed saving {0} to \"{1}\" since the parent folder is not created successfully. ".format(saveExcelName, savePath))
+			return False
 	
 	# Train #
 	def train(self:object) -> None:
 		device = torchDevice("cuda" if is_available() else "cpu") # GPU performs better than CPU
 		print("Getting ready to train. Device currently used is {0}. ".format(device))
-		model = Net(self.net).to(device)
+		model = Net(self.net, self.dataClassCount, self.conv2dParameters).to(device)
 		#optimizer = optim.SGD(model.parameters(), lr = self.initialLearningRate, momentum = 0.8, weight_decay = 3e-3)
 		optimizer = optim.Adam(model.parameters(), lr = self.initialLearningRate, betas = (0.9, 0.999), eps = 1e-8, weight_decay = 5e-4, amsgrad = True)
 		scheduler = StepLR(optimizer, step_size = 4, gamma = 0.3)
-		criterion = nn.CrossEntropyLoss()
+		criterion = CrossEntropyLoss()
 		trainingLoaderCount = len(self.trainingLoader)
 		trainingGeneralAccuracy, trainingDetailedAccuracy, trainingGeneralLoss, trainingDetailedLoss = [], [], [], []
 		samplingIdx = 0
 		print("\n\nStart to train the model. \n")
-		startTime = datetime.now()
+		timeConsumption = []
 		try:
 			for epoch in range(1, self.maxEpoch + 1):
+				startTime = datetime.now()
 				trainingDetailedAccuracy.append([])
 				trainingDetailedLoss.append([])
 				print("Training epoch: {0}".format(epoch))
@@ -426,17 +482,22 @@ class ResNet:
 				trainingGeneralAccuracy.append(generalAccuracy)
 				generalLoss = sum(trainingDetailedLoss[-1]) / len(trainingDetailedLoss[-1])
 				trainingGeneralLoss.append(generalLoss)
-				self.log("trainingGeneralAccuracy = {0}\n\ntrainingDetailedAccuracy = {1}\n\ntrainingGeneralLoss = {2}\n\ntrainingDetailedLoss = {3}".format(		\
-					trainingGeneralAccuracy, trainingDetailedAccuracy, trainingGeneralLoss, trainingDetailedLoss), self.trainingLogFilePath			\
-				)
+				endTime = datetime.now()
+				timeConsumption.append((endTime - startTime).total_seconds())
 				print("Epoch: {0}  Accuracy: {1}  Loss: {2}\n".format(epoch, generalAccuracy, generalLoss))
 				if epoch != self.maxEpoch:
+					self.log("trainingGeneralAccuracy = {0}\n\ntrainingDetailedAccuracy = {1}\n\ntrainingGeneralLoss = {2}\n\ntrainingDetailedLoss = {3}".format(		\
+						trainingGeneralAccuracy, trainingDetailedAccuracy, trainingGeneralLoss, trainingDetailedLoss), self.trainingLogFilePath			\
+					)
+					samplingIdx = 0
 					sleep(self.pauseTime)
 		except KeyboardInterrupt:
-			print("The training is interrupted by users. ")
+			print("The training is interrupted by users. The time consumption may be inaccurate. ")
 		except Exception as e:
 			print("Failed training the model. Details are as follows. \n{0}".format(e))
-		endTime = datetime.now()
+		self.log("trainingGeneralAccuracy = {0}\n\ntrainingDetailedAccuracy = {1}\n\ntrainingGeneralLoss = {2}\n\ntrainingDetailedLoss = {3}".format(		\
+			trainingGeneralAccuracy, trainingDetailedAccuracy, trainingGeneralLoss, trainingDetailedLoss), self.trainingLogFilePath			\
+		)
 		if ResNet.handleFolder(os.path.split(self.modelFilePath)[0]):
 			try:
 				torchSave(model, self.modelFilePath) # save model
@@ -451,12 +512,11 @@ class ResNet:
 				print("Maybe this model has over-fitted to your training set. ")
 			print("trainingGeneralAccuracy = {0}".format(trainingGeneralAccuracy))
 			maxTrainingGeneralAccuracy = max(trainingGeneralAccuracy)
-			maxTrainingGeneralAccuracyEpoch = trainingGeneralAccuracy.index(maxTrainingGeneralAccuracy)
-			print(																	\
-				"Max accuracy approached at epoch {0} is {1}%. \nThe overall time consumption is {2:.6f}s. \nThe time cost to this accuracy is {3:.6f}s".format(			\
-					maxTrainingGeneralAccuracyEpoch, maxTrainingGeneralAccuracy * 100, (endTime - startTime).total_seconds() - pauseTime * (self.maxEpoch - 1), 		\
-					((endTime - startTime).total_seconds() - pauseTime * (self.maxEpoch - 1)) * maxTrainingGeneralAccuracyEpoch / self.maxEpoch			\
-				)																\
+			maxTrainingGeneralAccuracyEpoch = trainingGeneralAccuracy.index(maxTrainingGeneralAccuracy) + 1 # to meet the timeConsumption[:epoch] by the way
+			print(																		\
+				"Max accuracy approached at epoch {0} is {1}%. \nThe overall time consumption is {2:.6f}s. \nThe time cost to this accuracy is {3:.6f}s".format(				\
+					maxTrainingGeneralAccuracyEpoch, maxTrainingGeneralAccuracy * 100, sum(timeConsumption), sum(timeConsumption[:maxTrainingGeneralAccuracyEpoch])		\
+				)																	\
 			)
 			self.draw(																\
 				[i for i in range(1, len(trainingGeneralAccuracy) + 1)], trainingGeneralAccuracy, color = "orange", marker = "x", legend = ["Accuracy"], title = None, 		\
@@ -501,8 +561,6 @@ class ResNet:
 		print("Start to test the model. ")
 		model = torchLoad(self.modelFilePath) if is_available() else torchLoad(self.modelFilePath, map_location = "cpu")
 		model.cpu()
-		classes = self.dataClasses if self.randomSplit else self.trainingClasses
-		classCount = len(classes)
 		testingReal = []
 		testingPredicted = []
 		with no_grad():
@@ -513,26 +571,13 @@ class ResNet:
 				testingReal += [labels[i].item() for i in range(len(labels))]
 				testingPredicted += [predicted[i].item() for i in range(len(predicted))]
 		try:
-			testingConfusionMatrix = confusion_matrix(testingReal, testingPredicted)
-			testingAccuracyScore = accuracy_score(testingReal, testingPredicted)
-			testingF1Score = f1_score(testingReal, testingPredicted, average = "micro")
-			testingPrecisionScore = precision_score(testingReal, testingPredicted, average = "micro")
-			testingRecallScore = recall_score(testingReal, testingPredicted, average = "micro")
-			self.log(																		\
-				"Testing confusion matrix: \n{0}\n\nTesting accuracy score: {1}\nTesting f1 score: {2}\nTesting precision score: {3}\nTesting recall score: {4}\n\nLabels: \n{5}".format(		\
-					testingConfusionMatrix, testingAccuracyScore, testingF1Score, testingPrecisionScore, testingRecallScore, 							\
-					"\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(classes)])										\
-				), 																	\
-				testingLogFilePath																\
-			)
-			print(																\
-				"Testing confusion matrix: \n{0}\n\nTesting accuracy score: {1}\nTesting f1 score: {2}\nTesting precision score: {3}\nTesting recall score: {4}".format(	\
-					testingConfusionMatrix, testingAccuracyScore, testingF1Score, testingPrecisionScore, testingRecallScore, 					\
-				)															\
-			)
+			self.testingConfusionMatrix = confusion_matrix(testingReal, testingPredicted)
+			self.log("Testing confusion matrix: \n{0}\n\nLabels: \n{1}".format(self.testingConfusionMatrix, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])), self.testingLogFilePath)
+			print("Testing confusion matrix: \n{0}\n\nLabels: \n{1}".format(self.testingConfusionMatrix, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])))
 			plt.rcParams["figure.dpi"] = 300
 			plt.rcParams["savefig.dpi"] = 300
-			heatmap(testingConfusionMatrix, annot = True, fmt = "d", cmap = "BuPu")
+			names = [c if len(c) <= 7 else c[0] + c[1] + "..." + c[-2] + c[-1] for c in self.dataClasses]
+			heatmap(DF(self.testingConfusionMatrix,  columns = names, index = names), annot = True, fmt = "d", cmap = "BuPu")
 			plt.xlabel("Predicted")
 			plt.ylabel("Real")
 			plt.rcParams["figure.dpi"] = self.dpi
@@ -548,6 +593,64 @@ class ResNet:
 		finally:
 			plt.close()
 		print("The testing is finished. ")
+	
+	# Evaluate #
+	def evaluate(self:object) -> bool:
+		if (not hasattr(self, "testingConfusionMatrix") or self.testingConfusionMatrix is None) and os.path.isfile(self.testingLogFilePath): # try to read from files if no confusion matrix generated
+			print("No testing confusion matrix generated. Trying to read from \"{0}\". ".format(self.testingLogFilePath))
+			content = ResNet.getTxt(self.testingLogFilePath)
+			if content:
+				startIdx, endIdx = None, None
+				lines = content.split("\n")
+				for i, line in enumerate(lines):
+					if "[[" in line:
+						startIdx = i
+					elif "]]" in line:
+						endIdx = i
+						break
+				if startIdx and endIdx and startIdx < endIdx:
+					try:
+						self.testingConfusionMatrix = [int(dg) for dg in findall("\\d+", " ".join(lines[startIdx:endIdx + 1]))]
+						shape = int(sqrt(len(self.testingConfusionMatrix)))
+						self.testingConfusionMatrix = array(self.testingConfusionMatrix, dtype = int).reshape(shape, shape)
+						print("The testing confusion matrix read from \"{0}\" is as follows. \n{1}".format(self.testingLogFilePath, self.testingConfusionMatrix))
+					except Exception as e:
+						print("Cannot read the testing confusion matrix from \"{0}\". Details are as follows. \n{1}".format(self.testingLogFilePath, e))
+						self.testingConfusionMatrix = None
+		if not hasattr(self, "testingConfusionMatrix") or self.testingConfusionMatrix is None:
+			print("No testing confusion matrix generated. The evaluation is failed. ")
+			return False
+
+		# Per classification #
+		evaluationMatrix = zeros((self.testingConfusionMatrix.shape[0], 3), dtype = float)
+		evaluationMatrix[:, 0] = diag(self.testingConfusionMatrix) / npSum(self.testingConfusionMatrix, axis = 1) # precision
+		evaluationMatrix[:, 1] = diag(self.testingConfusionMatrix) / npSum(self.testingConfusionMatrix, axis = 0) # recall
+		evaluationMatrix[:, 2] = 2 * (evaluationMatrix[:, 0] * evaluationMatrix[:, 1]) / (evaluationMatrix[:, 0] + evaluationMatrix[:, 1]) # F1 score
+		evaluationMatrix = DF(evaluationMatrix, columns = ["Precision", "Recall", "F1 Score"], index = list(range(evaluationMatrix.shape[0])))
+		print("Values of precision, recall, and F1 score evaluated per classification are listed as follows. \n{0}".format(evaluationMatrix))
+		
+		# Overall evaluation #
+		totalSum = npSum(self.testingConfusionMatrix)
+		accuracy = npSum(diag(self.testingConfusionMatrix)) / totalSum
+		summaryMatrix = zeros((3, 3), dtype = float)
+		summaryMatrix[0, :] = npSum(evaluationMatrix, axis = 0) / evaluationMatrix.shape[0]
+		weightArray = npSum(self.testingConfusionMatrix, axis = 1) / totalSum
+		summaryMatrix[1, :] = npSum(evaluationMatrix * weightArray[:, None], axis = 0)
+		summaryMatrix[2, :] = accuracy
+		summaryMatrix = DF(summaryMatrix, columns = ["Precision", "Recall", "F1 Score"], index = ["Macro", "Weighted", "Micro"])
+		print("Overall values of precision, recall, and F1 score evaluated are listed as follows. \nAccuracy: {0}\n{1}".format(accuracy, summaryMatrix))
+			
+		# Output #
+		bRet = self.saveExcel(DF(self.testingConfusionMatrix, columns = list(range(self.dataClassCount)), index = list(range(self.dataClassCount))), "testingConfusionMatrix")
+		bRet = self.saveExcel(evaluationMatrix, "testingEvaluationMatrix") and bRet
+		bRet = self.saveExcel(summaryMatrix, "testingSummaryMatrix") and bRet
+		bRet = self.log(																\
+			"Testing confusion matrix: \n{0}\n\nTesting evaluation per classification: \n{1}\n\nTesting overall evaluation: \n{2}\n\nLabels: \n{3}".format(			\
+				self.testingConfusionMatrix, evaluationMatrix, summaryMatrix, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])		\
+			), 																\
+			testingLogFilePath															\
+		) and bRet
+		return bRet
 	
 	# Static #
 	@staticmethod
@@ -586,27 +689,44 @@ class ResNet:
 				return True
 			except:
 				return False
+	@staticmethod
+	def getTxt(filepath, index = 0) -> str: # get .txt content
+		coding = ("utf-8", "gbk", "utf-16") # codings
+		if 0 <= index < len(coding): # in the range
+			try:
+				with open(filepath, "r", encoding = coding[index]) as f:
+					content = f.read()
+				return content[1:] if content.startswith("\ufeff") else content # if utf-8 with BOM, remove BOM
+			except (UnicodeError, UnicodeDecodeError):
+				return getTxt(filepath, index + 1) # recursion
+			except:
+				return None
+		else:
+			return None # out of range
 
 
 # Function #
 def main() -> int:
 	resNet = ResNet(
-		useNet = useNet, maxEpoch = maxEpoch, batchSize = batchSize, initialLearningRate = initialLearningRate, 	\
-		dataSetPath = dataSetPath, randomSplit = randomSplit, splitRate = splitRate, trainingSetPath = trainingSetPath, 	\
-		testingSetPath = testingSetPath, isShuffle = isShuffle, 	modelFilePath = modelFilePath, 			\
-		trainingLogFilePath = trainingLogFilePath, sampling = sampling, testingLogFilePath = testingLogFilePath, 		\
-		performanceFigureFilePathFormat = performanceFigureFilePathFormat, dpi = dpi, pauseTime = pauseTime		\
+		useNet = useNet, maxEpoch = maxEpoch, batchSize = batchSize, initialLearningRate = initialLearningRate, conv2dParameters = conv2dParameters, 			\
+		dataSetPath = dataSetPath, randomSplit = randomSplit, splitRate = splitRate, trainingSetPath = trainingSetPath, testingSetPath = testingSetPath, 			\
+		isShuffle = isShuffle, 	modelFilePath = modelFilePath, trainingLogFilePath = trainingLogFilePath, sampling = sampling, testingLogFilePath = testingLogFilePath, 		\
+		performanceFigureFilePathFormat = performanceFigureFilePathFormat, performanceExcelFilePathFormat = performanceExcelFilePathFormat, 			\
+		encoding = encoding, dpi = dpi, pauseTime = pauseTime											\
 	)
 	try:
 		resNet.load()
 		resNet.train()
 		resNet.test()
+		resNet.evaluate()
 		print("\nAll the procedures are finished. Please press the enter key to exit. \n")
-		input()
+		if len(argv) <= 1 or "q" not in argv[1].lower():
+			input()
 		return EXIT_SUCCESS
 	except Exception as e:
 		print("Exceptions occurred. Details are as follows. \n{0}\n\nPlease press the enter key to exit. \n".format(e))
-		input()
+		if len(argv) <= 1 or "q" not in argv[1].lower():
+			input()
 		return EXIT_FAILURE
 
 
