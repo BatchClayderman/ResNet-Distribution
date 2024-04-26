@@ -7,7 +7,7 @@ from datetime import datetime
 from time import sleep
 try:
 	from numpy import array, diag, fromstring, sqrt, sum as npSum, zeros
-	from pandas import DataFrame as DF
+	from pandas import DataFrame as DF, read_csv, read_excel
 	from matplotlib import pyplot as plt
 	from matplotlib.ticker import MaxNLocator
 	from torch import __version__ as torchVersion, device as torchDevice, load as torchLoad, max as torchMax, no_grad, optim, save as torchSave
@@ -253,6 +253,8 @@ class ResNet:
 		else:
 			print("Unknown or illegal pausing time is specified. It is defaulted to 0. ")
 			self.pauseTime = 0
+		# flags #
+		self.flags = [False, False, False, False]
 	
 	# Load #
 	def getClasses(self:object, targetSetPath:str, targetSetName:str) -> tuple:
@@ -289,6 +291,8 @@ class ResNet:
 			else:
 				print("The counts of training and testing classes are different. ")
 				return False
+		if self.dataClassCount < 2:
+			return False
 		
 		if useNet in ResNet.netSeries[:2]:
 			transformPIL = transforms.RandomApply([transforms.RandomHorizontalFlip(p = 1), transforms.RandomVerticalFlip(p = 1), transforms.RandomRotation(45)], p = 0.5)
@@ -339,9 +343,10 @@ class ResNet:
 			self.trainingLoader = DataLoader(trainingSet, batch_size = self.batchSize, sampler = trainingSampler, num_workers = 4)
 			self.testingLoader = DataLoader(testingSet, batch_size = self.batchSize, sampler = testingSampler, num_workers = 4)
 			print("There are {0} data in total, {1} of which are for training and {2} for testing. ".format(len(trainingSet) + len(testingSet), len(trainingSet), len(testingSet)))
+		self.flags[0] = True
 		return True
 	
-	# API #
+	# Train #
 	def getDetailedAccuracy(self:object, output:object, label:object) -> float:
 		total = output.shape[0]
 		_, pred_label = output.max(1)
@@ -360,8 +365,6 @@ class ResNet:
 				total += image.size(0)
 				correct += predicted.data.eq(label.data).cpu().sum()
 		return (1.0 * correct.numpy()) / total if total else float("nan")
-	
-	# Output #
 	def log(self:object, content:str, outputFp:str, mode = "w") -> bool:
 		if not content or not outputFp:
 			return None
@@ -419,25 +422,11 @@ class ResNet:
 			plt.show()
 			plt.close()
 			return True
-	def saveExcel(self:object, pf:DF, saveExcelName:str) -> bool:
-		savePath = self.performanceExcelFilePathFormat.format(saveExcelName)
-		if ResNet.handleFolder(os.path.split(savePath)[0]):
-			try:
-				if os.path.splitext(savePath)[1].lower() in (".txt", ".csv"):
-					pf.to_csv(savePath)
-				else:
-					pf.to_excel(savePath)
-				print("Save {0} to \"{1}\" successfully. ".format(saveExcelName, savePath))
-				return True
-			except Exception as e:
-				print("Failed saving {0} to \"{1}\". Details are as follows. \n{2}".format(saveExcelName, savePath, e))
-				return False
-		else:
-			print("Failed saving {0} to \"{1}\" since the parent folder is not created successfully. ".format(saveExcelName, savePath))
+	def train(self:object) -> bool:
+		if not self.flags[0]:
+			print("Please call ``load`` before ``train``. ")
 			return False
-	
-	# Train #
-	def train(self:object) -> None:
+		
 		device = torchDevice("cuda" if is_available() else "cpu") # GPU performs better than CPU
 		print("Getting ready to train. Device currently used is {0}. ".format(device))
 		model = Net(self.net, self.dataClassCount, self.conv2dParameters).to(device)
@@ -552,12 +541,17 @@ class ResNet:
 		else:
 			print("No training detailed loss values are collected. ")
 		print("\nThe training is finished. \n\n")
+		self.flags[1] = True
+		return True
 	
 	# Test #
-	def test(self:object) -> None:
+	def test(self:object) -> bool:
+		if not self.flags[0] or not self.flags[1]:
+			print("Please call ``load`` and ``train`` before ``test``. Due to the presence of random procedures in the first two procedures like random dataset division, this script does not support executing ``test`` separately. ")
 		if not os.path.isfile(self.modelFilePath):
 			print("The model file does not exist. The testing is failed due to no models loaded. ")
-			return
+			return False
+		
 		print("Start to test the model. ")
 		model = torchLoad(self.modelFilePath) if is_available() else torchLoad(self.modelFilePath, map_location = "cpu")
 		model.cpu()
@@ -576,6 +570,7 @@ class ResNet:
 			print("Testing confusion matrix: \n{0}\n\nLabels: \n{1}".format(self.testingConfusionMatrix, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])))
 			plt.rcParams["figure.dpi"] = 300
 			plt.rcParams["savefig.dpi"] = 300
+			plt.rcParams["font.family"] = "Times New Roman"
 			names = [c if len(c) <= 7 else c[0] + c[1] + "..." + c[-2] + c[-1] for c in self.dataClasses]
 			heatmap(DF(self.testingConfusionMatrix,  columns = names, index = names), annot = True, fmt = "d", cmap = "BuPu")
 			plt.xlabel("Predicted")
@@ -595,32 +590,62 @@ class ResNet:
 		print("The testing is finished. ")
 	
 	# Evaluate #
+	def saveExcel(self:object, pf:DF, saveExcelName:str) -> bool:
+		savePath = self.performanceExcelFilePathFormat.format(saveExcelName)
+		if ResNet.handleFolder(os.path.split(savePath)[0]):
+			try:
+				if os.path.splitext(savePath)[1].lower() in (".txt", ".csv"):
+					pf.to_csv(savePath)
+				else:
+					pf.to_excel(savePath)
+				print("Save {0} to \"{1}\" successfully. ".format(saveExcelName, savePath))
+				return True
+			except Exception as e:
+				print("Failed saving {0} to \"{1}\". Details are as follows. \n{2}".format(saveExcelName, savePath, e))
+				return False
+		else:
+			print("Failed saving {0} to \"{1}\" since the parent folder is not created successfully. ".format(saveExcelName, savePath))
+			return False
 	def evaluate(self:object) -> bool:
 		if (not hasattr(self, "testingConfusionMatrix") or self.testingConfusionMatrix is None) and os.path.isfile(self.testingLogFilePath): # try to read from files if no confusion matrix generated
-			print("No testing confusion matrix generated. Trying to read from \"{0}\". ".format(self.testingLogFilePath))
+			testingConfusionMatrixFilePath = performanceExcelFilePathFormat.format("testingConfusionMatrix")
+			print("The testing confusion matrix has not been recorded. Trying to read from \"{0}\". ".format(testingConfusionMatrixFilePath))
+			try:
+				if os.path.splitext(testingConfusionMatrixFilePath)[1].lower() in (".txt", ".csv"):
+					self.testingConfusionMatrix = read_csv(testingConfusionMatrixFilePath, index_col = 0).values.astype("int")
+				else:
+					self.testingConfusionMatrix = read_excel(testingConfusionMatrixFilePath, index_col = 0).values.astype("int")
+				print(																\
+					"The testing confusion matrix ({0} x {1}) read from \"{2}\" is as follows. \n{3}".format(							\
+						self.testingConfusionMatrix.shape[0], self.testingConfusionMatrix.shape[1], testingConfusionMatrixFilePath, self.testingConfusionMatrix		\
+					)															\
+				)
+			except Exception as e:
+				print("Cannot read the testing confusion matrix from \"{0}\". Details are as follows. \n{1}".format(testingConfusionMatrixFilePath, e))
+				self.testingConfusionMatrix = None
+		if not hasattr(self, "dataClassCount") or not hasattr(self, "dataClasses"):
+			print("The data class information has not been recorded. Trying to read from \"{0}\". ".format(self.testingLogFilePath))
 			content = ResNet.getTxt(self.testingLogFilePath)
 			if content:
-				startIdx, endIdx = None, None
 				lines = content.split("\n")
-				for i, line in enumerate(lines):
-					if "[[" in line:
-						startIdx = i
-					elif "]]" in line:
-						endIdx = i
-						break
-				if startIdx and endIdx and startIdx < endIdx:
-					try:
-						self.testingConfusionMatrix = [int(dg) for dg in findall("\\d+", " ".join(lines[startIdx:endIdx + 1]))]
-						shape = int(sqrt(len(self.testingConfusionMatrix)))
-						self.testingConfusionMatrix = array(self.testingConfusionMatrix, dtype = int).reshape(shape, shape)
-						print("The testing confusion matrix read from \"{0}\" is as follows. \n{1}".format(self.testingLogFilePath, self.testingConfusionMatrix))
-					except Exception as e:
-						print("Cannot read the testing confusion matrix from \"{0}\". Details are as follows. \n{1}".format(self.testingLogFilePath, e))
-						self.testingConfusionMatrix = None
-		if not hasattr(self, "testingConfusionMatrix") or self.testingConfusionMatrix is None:
-			print("No testing confusion matrix generated. The evaluation is failed. ")
+				self.dataClasses = []
+				idx = None
+				for line in lines:
+					if line == "Labels: " and idx is None:
+						idx = 0
+					elif isinstance(idx, int) and line.startswith(str(idx) + "\t"):
+						self.dataClasses.append(line.split("\t")[1])
+						idx += 1
+				self.dataClassCount = len(self.dataClasses)
+				print("The data class information read from \"{0}\" is as follows. \n{1}".format(self.testingLogFilePath, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])))
+		if (												\
+			not hasattr(self, "testingConfusionMatrix")	or not hasattr(self, "dataClassCount") or not hasattr(self, "dataClasses")	\
+			or self.testingConfusionMatrix is None or self.testingConfusionMatrix.ndim != 2 or self.dataClassCount <= 2	\
+			or not self.testingConfusionMatrix.shape[0] == self.testingConfusionMatrix.shape[1] == self.dataClassCount	\
+		):
+			print("A valid testing confusion matrix or a valid data class information has not been recorded. The evaluation is failed. ")
 			return False
-
+		
 		# Per classification #
 		evaluationMatrix = zeros((self.testingConfusionMatrix.shape[0], 3), dtype = float)
 		evaluationMatrix[:, 0] = diag(self.testingConfusionMatrix) / npSum(self.testingConfusionMatrix, axis = 1) # precision
@@ -637,6 +662,7 @@ class ResNet:
 		weightArray = npSum(self.testingConfusionMatrix, axis = 1) / totalSum
 		summaryMatrix[1, :] = npSum(evaluationMatrix * weightArray[:, None], axis = 0)
 		summaryMatrix[2, :] = accuracy
+		summaryMatrix[:, 2] = 2 * (summaryMatrix[:, 0] * summaryMatrix[:, 1]) / (summaryMatrix[:, 0] + summaryMatrix[:, 1]) # F1 score
 		summaryMatrix = DF(summaryMatrix, columns = ["Precision", "Recall", "F1 Score"], index = ["Macro", "Weighted", "Micro"])
 		print("Overall values of precision, recall, and F1 score evaluated are listed as follows. \nAccuracy: {0}\n{1}".format(accuracy, summaryMatrix))
 			
@@ -645,11 +671,13 @@ class ResNet:
 		bRet = self.saveExcel(evaluationMatrix, "testingEvaluationMatrix") and bRet
 		bRet = self.saveExcel(summaryMatrix, "testingSummaryMatrix") and bRet
 		bRet = self.log(																\
-			"Testing confusion matrix: \n{0}\n\nTesting evaluation per classification: \n{1}\n\nTesting overall evaluation: \n{2}\n\nLabels: \n{3}".format(			\
-				self.testingConfusionMatrix, evaluationMatrix, summaryMatrix, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])		\
+			"Testing confusion matrix: \n{0}\n\nTesting accuracy: {1}\n\nTesting evaluation per classification: \n{2}\n\nTesting overall evaluation: \n{3}\n\nLabels: \n{4}".format(	\
+				self.testingConfusionMatrix, accuracy, evaluationMatrix, summaryMatrix, "\n".join(["{0}\t{1}".format(i, label) for i, label in enumerate(self.dataClasses)])	\
 			), 																\
 			testingLogFilePath															\
 		) and bRet
+		if bRet:
+			self.flags[3] = True
 		return bRet
 	
 	# Static #
@@ -698,7 +726,7 @@ class ResNet:
 					content = f.read()
 				return content[1:] if content.startswith("\ufeff") else content # if utf-8 with BOM, remove BOM
 			except (UnicodeError, UnicodeDecodeError):
-				return getTxt(filepath, index + 1) # recursion
+				return ResNet.getTxt(filepath, index + 1) # recursion
 			except:
 				return None
 		else:
@@ -715,14 +743,20 @@ def main() -> int:
 		encoding = encoding, dpi = dpi, pauseTime = pauseTime											\
 	)
 	try:
-		resNet.load()
-		resNet.train()
-		resNet.test()
+		if len(argv) <= 1 or "-t" not in argv[1].lower():
+			resNet.load()
+			resNet.train()
+			resNet.test()
 		resNet.evaluate()
 		print("\nAll the procedures are finished. Please press the enter key to exit. \n")
 		if len(argv) <= 1 or "q" not in argv[1].lower():
 			input()
 		return EXIT_SUCCESS
+	except KeyboardInterrupt:
+		print("Procedures are interrupted by users. Please press the enter key to  exit. \n")
+		if len(argv) <= 1 or "q" not in argv[1].lower():
+			input()
+		return EXIT_FAILURE
 	except Exception as e:
 		print("Exceptions occurred. Details are as follows. \n{0}\n\nPlease press the enter key to exit. \n".format(e))
 		if len(argv) <= 1 or "q" not in argv[1].lower():
